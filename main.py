@@ -7,6 +7,7 @@ from import_resume import (
     CSVImporter,
     ImporterFactory,
     LRSImporter,
+    YouratorImporter,
 )
 from import_resume.database import ResumeDatabase
 
@@ -22,6 +23,7 @@ app.add_typer(
 ImporterFactory.register("lrs", LRSImporter)
 ImporterFactory.register("csv", CSVImporter)
 ImporterFactory.register("cake", CakeImporter)
+ImporterFactory.register("yourator", YouratorImporter)
 
 
 @app.command()
@@ -215,6 +217,76 @@ def import_cake(
 
     except Exception as e:
         typer.echo(f"❌ Error importing from Cake: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@import_app.command("yourator")
+def import_yourator(
+    file_path: str = typer.Option(
+        "./yourator.xlsx", help="Path to Yourator Excel file"
+    ),
+    db_path: str = typer.Option("resume.db", help="Path to SQLite database file"),
+    skip_validation: bool = typer.Option(False, help="Skip data validation"),
+):
+    """
+    Import resume data from Yourator Excel file.
+    """
+    try:
+        excel_file = Path(file_path)
+        if not excel_file.exists():
+            typer.echo(f"❌ Excel file not found: {excel_file}", err=True)
+            raise typer.Exit(1)
+
+        # Create importer and database
+        importer = ImporterFactory.create("yourator")
+        database = ResumeDatabase(db_path)
+
+        typer.echo(f"Importing data from Yourator Excel file: {excel_file}")
+
+        # Import data
+        result = importer.import_data(
+            skip_validation=skip_validation, file_path=str(excel_file)
+        )
+
+        if not result.success:
+            typer.echo(f"❌ {result.message}", err=True)
+            raise typer.Exit(1)
+
+        # Display validation results
+        if result.validation_errors:
+            typer.echo(f"⚠️  Found {len(result.validation_errors)} validation errors:")
+            for error in result.validation_errors[:10]:  # Show first 10 errors
+                typer.echo(f"  Row {error.row_index}: {error.field} - {error.error}")
+
+            if len(result.validation_errors) > 10:
+                typer.echo(
+                    f"  ... and {len(result.validation_errors) - 10} more errors"
+                )
+
+            if not skip_validation and not typer.confirm(
+                "Continue with import despite validation errors?"
+            ):
+                typer.echo("Import cancelled.")
+                raise typer.Exit(0)
+
+        typer.echo(
+            f"✅ Validated {len(result.valid_resumes)} valid records out of {result.total_records} total records"
+        )
+
+        if not result.valid_resumes:
+            typer.echo("❌ No valid records to import")
+            raise typer.Exit(1)
+
+        # Save to database
+        saved_count = database.save_resumes(result.valid_resumes)
+
+        typer.echo(
+            f"✅ Successfully imported {saved_count} records from {importer.source_name}"
+        )
+        typer.echo(f"Database saved to: {Path(db_path).absolute()}")
+
+    except Exception as e:
+        typer.echo(f"❌ Error importing from Yourator: {e}", err=True)
         raise typer.Exit(1)
 
 
