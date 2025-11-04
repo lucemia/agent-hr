@@ -1,7 +1,7 @@
 [project]
 name = "cli-app"
 version = "0.1.0"
-description = "Add your description here"
+description = "Resume import system with modular architecture"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -11,4 +11,12 @@ dependencies = [
     "requests>=2.32.5",
     "sqlmodel>=0.0.27",
     "typer>=0.20.0",
+]
+
+[project.scripts]
+resume-import = "main:app"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.3",
 ]
