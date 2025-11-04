@@ -173,7 +173,7 @@ class ResumeImporter(ABC):
                         row_dict = self.apply_source_specific_transforms(row_dict)
                         resume = Resume(**row_dict)
                         valid_resumes.append(resume)
-                    except Exception:
+                    except Exception:  # nosec B112
                         continue  # Skip invalid rows when validation is disabled
             else:
                 # Validate data

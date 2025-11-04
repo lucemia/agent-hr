@@ -55,7 +55,7 @@ class CakeImporter(ResumeImporter):
             requests.RequestException: If data cannot be fetched
         """
         try:
-            response = requests.get(self.sheet_url)
+            response = requests.get(self.sheet_url, timeout=30)
             response.raise_for_status()
 
             # Ensure proper UTF-8 encoding

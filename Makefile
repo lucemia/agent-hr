@@ -1,15 +1,18 @@
-.PHONY: lint format check test install clean help
+.PHONY: lint format check test install clean help pre-commit pre-commit-install pre-commit-update
 
 # Default target
 help:
 	@echo "Available commands:"
-	@echo "  lint     - Run ruff linter"
-	@echo "  format   - Run ruff formatter"
-	@echo "  check    - Run both linter and formatter (check only)"
-	@echo "  fix      - Run linter with auto-fix and formatter"
-	@echo "  install  - Install dependencies"
-	@echo "  clean    - Clean cache and temporary files"
-	@echo "  test     - Run tests (placeholder)"
+	@echo "  lint              - Run ruff linter"
+	@echo "  format            - Run ruff formatter"
+	@echo "  check             - Run both linter and formatter (check only)"
+	@echo "  fix               - Run linter with auto-fix and formatter"
+	@echo "  pre-commit        - Run all pre-commit hooks"
+	@echo "  pre-commit-install- Install pre-commit hooks"
+	@echo "  pre-commit-update - Update pre-commit hooks"
+	@echo "  install           - Install dependencies and pre-commit hooks"
+	@echo "  clean             - Clean cache and temporary files"
+	@echo "  test              - Run tests (placeholder)"
 
 # Linting
 lint:
@@ -29,9 +32,20 @@ fix:
 	uv run ruff check --fix .
 	uv run ruff format .
 
+# Pre-commit hooks
+pre-commit:
+	uv run pre-commit run --all-files
+
+pre-commit-install:
+	uv run pre-commit install
+
+pre-commit-update:
+	uv run pre-commit autoupdate
+
 # Install dependencies
 install:
 	uv sync
+	uv run pre-commit install
 
 # Clean cache and temporary files
 clean:

@@ -18,5 +18,11 @@ resume-import = "main:app"
 
 [dependency-groups]
 dev = [
+    "bandit[toml]>=1.8.6",
+    "pre-commit>=4.3.0",
     "ruff>=0.14.3",
 ]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv"]
+skips = ["B101", "B601"]  # Skip assert_used and shell_injection_process_args for dev tools
