@@ -12,7 +12,10 @@ help:
 	@echo "  pre-commit-update - Update pre-commit hooks"
 	@echo "  install           - Install dependencies and pre-commit hooks"
 	@echo "  clean             - Clean cache and temporary files"
-	@echo "  test              - Run tests (placeholder)"
+	@echo "  test              - Run tests"
+	@echo "  test-verbose      - Run tests with verbose output"
+	@echo "  test-coverage     - Run tests with coverage report"
+	@echo "  test-watch        - Run tests in watch mode"
 
 # Linting
 lint:
@@ -53,6 +56,15 @@ clean:
 	find . -type f -name "*.pyc" -delete
 	rm -rf .ruff_cache
 
-# Placeholder for tests
+# Testing
 test:
-	@echo "No tests configured yet"
+	uv run pytest
+
+test-verbose:
+	uv run pytest -v
+
+test-coverage:
+	uv run pytest --cov=import_resume --cov-report=html --cov-report=term
+
+test-watch:
+	uv run pytest-watch
