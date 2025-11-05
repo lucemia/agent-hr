@@ -3,11 +3,9 @@ LRS (Google Sheets) resume importer implementation.
 """
 
 import logging
-from io import StringIO
 from typing import Any
 
 import pandas as pd
-import requests
 
 from ..interface import ResumeImporter
 from ..models import InterviewStatus
@@ -18,6 +16,7 @@ logger = logging.getLogger(__name__)
 try:
     import gspread
     from google.oauth2.service_account import Credentials
+
     GSPREAD_AVAILABLE = True
 except ImportError:
     GSPREAD_AVAILABLE = False
@@ -89,7 +88,7 @@ class LRSImporter(ResumeImporter):
         if not GSPREAD_AVAILABLE:
             logger.warning("gspread not available, cannot extract hyperlinks")
             return {}
-        
+
         # Use column range mode (D:D) for LRS
         hyperlinks = get_hyperlinks_from_worksheet(
             worksheet=worksheet,
@@ -97,38 +96,42 @@ class LRSImporter(ResumeImporter):
             column_range="D:D",
             worksheet_title=worksheet_title,
         )
-        
+
         # Fallback: try alternative method using formulas if no hyperlinks found
         if not hyperlinks:
             try:
                 headers = worksheet.row_values(1)
                 resume_col_idx = None
-                
+
                 # Try to find by header name
                 try:
                     resume_col_idx = headers.index("履歷") + 1
                 except ValueError:
                     resume_col_idx = 4  # Column D is index 4 (1-based)
-                
+
                 if resume_col_idx:
                     num_rows = len(worksheet.get_all_values())
                     if num_rows > 1:
                         col_letter = _col_idx_to_letter(resume_col_idx)
-                        logger.debug(f"Trying alternative method with column {col_letter} (formula extraction)")
-                        
+                        logger.debug(
+                            f"Trying alternative method with column {col_letter} (formula extraction)"
+                        )
+
                         sheet_obj = worksheet.spreadsheet
                         response = sheet_obj.client.request(
                             "get",
                             f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}/values/{worksheet.title}!{col_letter}2:{col_letter}{num_rows}",
-                            params={"valueRenderOption": "FORMULA"}
+                            params={"valueRenderOption": "FORMULA"},
                         )
-                        
+
                         from .utils import parse_api_response
+
                         result = parse_api_response(response)
-                        
-                        if result and 'values' in result:
+
+                        if result and "values" in result:
                             import re
-                            for idx, row in enumerate(result['values']):
+
+                            for idx, row in enumerate(result["values"]):
                                 if row and len(row) > 0:
                                     formula = row[0]
                                     # Check for HYPERLINK formula
@@ -137,33 +140,40 @@ class LRSImporter(ResumeImporter):
                                     if match:
                                         url = match.group(1)
                                         hyperlinks[idx] = url
-                                        logger.debug(f"Found HYPERLINK formula via alternative method in row {idx + 2}: {url}")
+                                        logger.debug(
+                                            f"Found HYPERLINK formula via alternative method in row {idx + 2}: {url}"
+                                        )
             except Exception as e2:
-                logger.debug(f"Alternative method (formula extraction) also failed: {e2}")
-        
-        logger.info(f"Extracted {len(hyperlinks)} hyperlinks from worksheet '{worksheet_title}'")
+                logger.debug(
+                    f"Alternative method (formula extraction) also failed: {e2}"
+                )
+
+        logger.info(
+            f"Extracted {len(hyperlinks)} hyperlinks from worksheet '{worksheet_title}'"
+        )
         return hyperlinks
 
     def _get_gspread_client(self):
         """Get gspread client with credentials."""
-        import gspread
         import os
         from pathlib import Path
-        
+
+        import gspread
+
         # Check for credentials in multiple locations
         cred_path = None
-        
+
         # 1. Check environment variable
         env_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if env_path and Path(env_path).exists():
             cred_path = Path(env_path)
-        
+
         # 2. Check default location
         if not cred_path:
             default_path = Path.home() / ".config" / "gspread" / "service_account.json"
             if default_path.exists():
                 cred_path = default_path
-        
+
         # 3. Try to load from .env file if it exists
         if not cred_path:
             env_file = Path.cwd() / ".env"
@@ -172,13 +182,15 @@ class LRSImporter(ResumeImporter):
                     with open(env_file) as f:
                         for line in f:
                             if line.startswith("GOOGLE_APPLICATION_CREDENTIALS"):
-                                env_value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                                env_value = (
+                                    line.split("=", 1)[1].strip().strip('"').strip("'")
+                                )
                                 if Path(env_value).exists():
                                     cred_path = Path(env_value)
                                     break
                 except Exception:
                     pass
-        
+
         # Use credentials if found
         if cred_path:
             return gspread.service_account(filename=str(cred_path))
@@ -198,12 +210,10 @@ class LRSImporter(ResumeImporter):
         """
         if not GSPREAD_AVAILABLE:
             raise ImportError(
-                "gspread is required for LRS import. "
-                "Install it with: uv add gspread"
+                "gspread is required for LRS import. Install it with: uv add gspread"
             )
-        
+
         try:
-            import gspread
             gc = self._get_gspread_client()
         except Exception as e:
             raise ImportError(
@@ -216,41 +226,43 @@ class LRSImporter(ResumeImporter):
                 "  4. Run setup script: uv run python setup_google_credentials.py\n"
                 f"Error: {e}"
             )
-        
+
         # Open the sheet and get all worksheets
         sheet = gc.open_by_key(self.sheet_id)
         worksheets = sheet.worksheets()
-        
+
         all_dfs = []
-        
+
         for worksheet in worksheets:
             worksheet_title = worksheet.title
             logger.info(f"Fetching data from worksheet: {worksheet_title}")
-            
+
             try:
                 # Get all values from the worksheet
                 values = worksheet.get_all_values()
-                
+
                 if not values or len(values) < 2:  # Need at least header + 1 data row
                     logger.debug(f"No data in worksheet '{worksheet_title}'")
                     continue
-                
+
                 # Convert to DataFrame
                 headers = values[0]
                 data_rows = values[1:]
-                
+
                 df = pd.DataFrame(data_rows, columns=headers)
-                
+
                 # Add position_applied column with worksheet title
                 df["position_applied"] = worksheet_title
-                
+
                 # Try to enhance resume_file column with hyperlinks if available
                 if "履歷" in df.columns:
                     hyperlinks = self._get_hyperlinks(worksheet, worksheet_title)
-                    
+
                     if hyperlinks:
-                        logger.info(f"Found {len(hyperlinks)} hyperlinks in '{worksheet_title}'")
-                    
+                        logger.info(
+                            f"Found {len(hyperlinks)} hyperlinks in '{worksheet_title}'"
+                        )
+
                     # Replace filename values with URLs where hyperlinks are available
                     # hyperlinks dict maps 0-based row index (excluding header) to URL
                     for idx, url in hyperlinks.items():
@@ -258,21 +270,25 @@ class LRSImporter(ResumeImporter):
                         if idx < len(df):
                             # Update the resume_file value with the actual URL
                             df.iloc[idx, df.columns.get_loc("履歷")] = url
-                
+
                 all_dfs.append(df)
-                
+
             except Exception as e:
-                logger.warning(f"Failed to fetch data from worksheet '{worksheet_title}': {e}")
+                logger.warning(
+                    f"Failed to fetch data from worksheet '{worksheet_title}': {e}"
+                )
                 continue
-        
+
         if not all_dfs:
             raise ImportError("No data found in any worksheet")
-        
+
         # Combine all DataFrames
         combined_df = pd.concat(all_dfs, ignore_index=True)
-        
-        logger.info(f"Combined data from {len(all_dfs)} worksheets: {[ws.title for ws in worksheets if len(ws.get_all_values()) > 1]}")
-        
+
+        logger.info(
+            f"Combined data from {len(all_dfs)} worksheets: {[ws.title for ws in worksheets if len(ws.get_all_values()) > 1]}"
+        )
+
         return combined_df
 
     def apply_source_specific_transforms(

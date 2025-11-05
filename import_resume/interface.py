@@ -77,7 +77,9 @@ class ResumeImporter(ABC):
 
         # Preserve any columns that are already in the model format (e.g., position_applied added by importer)
         # These are typically fields that don't need mapping but should be preserved
-        model_fields = {"position_applied"}  # Add other direct model fields here if needed
+        model_fields = {
+            "position_applied"
+        }  # Add other direct model fields here if needed
         for field in model_fields:
             if field in df.columns and field not in transformed_data:
                 transformed_data[field] = df[field]

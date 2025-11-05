@@ -13,11 +13,11 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 try:
     import gspread
     from google.oauth2.service_account import Credentials
+
     GSPREAD_AVAILABLE = True
 except ImportError:
     GSPREAD_AVAILABLE = False
@@ -38,39 +38,45 @@ def print_step(step_num: int, description: str):
     print(f"\n📋 Step {step_num}: {description}")
 
 
-def check_existing_credentials() -> Optional[Path]:
+def check_existing_credentials() -> Path | None:
     """Check if credentials already exist."""
     # Check default location
     default_path = Path.home() / ".config" / "gspread" / "service_account.json"
     if default_path.exists():
         return default_path
-    
+
     # Check environment variable
     env_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if env_path and Path(env_path).exists():
         return Path(env_path)
-    
+
     return None
 
 
 def validate_credentials_file(cred_path: Path) -> bool:
     """Validate that the credentials JSON file is valid."""
     try:
-        with open(cred_path, "r") as f:
+        with open(cred_path) as f:
             creds = json.load(f)
-        
+
         # Check required fields
-        required_fields = ["type", "project_id", "private_key_id", "private_key", "client_email"]
+        required_fields = [
+            "type",
+            "project_id",
+            "private_key_id",
+            "private_key",
+            "client_email",
+        ]
         for field in required_fields:
             if field not in creds:
                 print(f"❌ Credentials file missing required field: {field}")
                 return False
-        
+
         if creds.get("type") != "service_account":
             print("❌ Credentials file is not a service account type")
             return False
-        
-        print(f"✅ Credentials file is valid")
+
+        print("✅ Credentials file is valid")
         print(f"   Service Account Email: {creds['client_email']}")
         return True
     except json.JSONDecodeError:
@@ -86,19 +92,21 @@ def test_credentials(cred_path: Path, sheet_id: str) -> bool:
     try:
         print("\n🔍 Testing credentials...")
         gc = gspread.service_account(filename=str(cred_path))
-        
+
         # Try to open the sheet
         sheet = gc.open_by_key(sheet_id)
         print(f"✅ Successfully connected to Google Sheet: {sheet.title}")
-        
+
         # Try to get worksheet
         worksheet = sheet.get_worksheet_by_id(int("127001815"))  # LRS gid
         print(f"✅ Successfully accessed worksheet: {worksheet.title}")
-        
+
         return True
     except Exception as e:
         print(f"❌ Failed to access Google Sheet: {e}")
-        print("\n💡 Make sure you've shared the Google Sheet with the service account email:")
+        print(
+            "\n💡 Make sure you've shared the Google Sheet with the service account email:"
+        )
         print(f"   {json.load(open(cred_path))['client_email']}")
         return False
 
@@ -108,14 +116,14 @@ def setup_credentials():
     print_section("Google Sheets Credentials Setup")
     print("\nThis script will help you set up Google service account credentials")
     print("to extract hyperlinks from Google Sheets.")
-    
+
     # Check if credentials already exist
     existing = check_existing_credentials()
     if existing:
         print(f"\n✅ Found existing credentials at: {existing}")
         if validate_credentials_file(existing):
             use_existing = input("\nUse existing credentials? (y/n): ").lower().strip()
-            if use_existing == 'y':
+            if use_existing == "y":
                 # Test existing credentials
                 sheet_id = "1mGpl2LzdXZlrKYXatWdAKQrI5SsagjTEen58xtjDNms"
                 if test_credentials(existing, sheet_id):
@@ -123,9 +131,9 @@ def setup_credentials():
                     return
                 else:
                     print("\n⚠️  Existing credentials failed. Let's set up new ones.")
-    
+
     print_section("Setup Instructions")
-    
+
     print_step(1, "Create Google Cloud Project and Service Account")
     print("""
    1. Go to: https://console.cloud.google.com/
@@ -141,9 +149,9 @@ def setup_credentials():
    9. Skip role assignment (click "Continue")
   10. Click "Done"
     """)
-    
+
     input("Press Enter when you've completed Step 1...")
-    
+
     print_step(2, "Download Service Account Key")
     print("""
    1. In the Credentials page, find your service account
@@ -153,36 +161,37 @@ def setup_credentials():
    5. Choose "JSON" format
    6. Click "Create" - the JSON file will download automatically
     """)
-    
+
     json_path = input("\nEnter the path to the downloaded JSON file: ").strip()
     json_path = Path(json_path).expanduser().resolve()
-    
+
     if not json_path.exists():
         print(f"❌ File not found: {json_path}")
         return
-    
+
     if not validate_credentials_file(json_path):
         return
-    
+
     # Load credentials to get email
-    with open(json_path, "r") as f:
+    with open(json_path) as f:
         creds_data = json.load(f)
     service_account_email = creds_data["client_email"]
-    
+
     print_step(3, "Install Credentials")
     cred_dir = Path.home() / ".config" / "gspread"
     cred_dir.mkdir(parents=True, exist_ok=True)
     target_path = cred_dir / "service_account.json"
-    
+
     # Copy credentials file
     import shutil
+
     shutil.copy2(json_path, target_path)
     print(f"✅ Credentials installed to: {target_path}")
-    
+
     # Set permissions
     os.chmod(target_path, 0o600)
     print("✅ Set secure permissions on credentials file")
-    
+
     print_step(4, "Share Google Sheet with Service Account")
     print(f"""
    1. Open your Google Sheet:
@@ -199,9 +208,9 @@ def setup_credentials():
    
    6. Click "Share"
     """)
-    
+
     input("Press Enter when you've shared the sheet with the service account...")
-    
+
     print_step(5, "Test Setup")
     sheet_id = "1mGpl2LzdXZlrKYXatWdAKQrI5SsagjTEen58xtjDNms"
     if test_credentials(target_path, sheet_id):
@@ -223,7 +232,7 @@ def main():
         print("❌ gspread is not available. Please install it first:")
         print("   uv add gspread")
         sys.exit(1)
-    
+
     try:
         setup_credentials()
     except KeyboardInterrupt:
@@ -232,10 +241,10 @@ def main():
     except Exception as e:
         print(f"\n❌ Error during setup: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-

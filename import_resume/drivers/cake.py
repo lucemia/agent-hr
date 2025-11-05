@@ -3,12 +3,10 @@ Cake (Google Sheets) resume importer implementation.
 """
 
 import logging
-from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import requests
 
 from ..interface import ResumeImporter
 from ..models import InterviewStatus
@@ -18,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import gspread
+
     GSPREAD_AVAILABLE = True
 except ImportError:
     GSPREAD_AVAILABLE = False
@@ -59,23 +58,24 @@ class CakeImporter(ResumeImporter):
 
     def _get_gspread_client(self):
         """Get gspread client with credentials."""
-        import gspread
         import os
-        
+
+        import gspread
+
         # Check for credentials in multiple locations
         cred_path = None
-        
+
         # 1. Check environment variable
         env_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if env_path and Path(env_path).exists():
             cred_path = Path(env_path)
-        
+
         # 2. Check default location
         if not cred_path:
             default_path = Path.home() / ".config" / "gspread" / "service_account.json"
             if default_path.exists():
                 cred_path = default_path
-        
+
         # 3. Try to load from .env file if it exists
         if not cred_path:
             env_file = Path.cwd() / ".env"
@@ -84,13 +84,15 @@ class CakeImporter(ResumeImporter):
                     with open(env_file) as f:
                         for line in f:
                             if line.startswith("GOOGLE_APPLICATION_CREDENTIALS"):
-                                env_value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                                env_value = (
+                                    line.split("=", 1)[1].strip().strip('"').strip("'")
+                                )
                                 if Path(env_value).exists():
                                     cred_path = Path(env_value)
                                     break
                 except Exception:
                     pass
-        
+
         # Use credentials if found
         if cred_path:
             return gspread.service_account(filename=str(cred_path))
@@ -110,12 +112,10 @@ class CakeImporter(ResumeImporter):
         """
         if not GSPREAD_AVAILABLE:
             raise ImportError(
-                "gspread is required for Cake import. "
-                "Install it with: uv add gspread"
+                "gspread is required for Cake import. Install it with: uv add gspread"
             )
-        
+
         try:
-            import gspread
             gc = self._get_gspread_client()
         except Exception as e:
             raise ImportError(
@@ -128,110 +128,122 @@ class CakeImporter(ResumeImporter):
                 "  4. Run setup script: uv run python setup_google_credentials.py\n"
                 f"Error: {e}"
             )
-        
+
         # Open the sheet and get all worksheets
         sheet = gc.open_by_key(self.sheet_id)
         worksheets = sheet.worksheets()
-        
+
         all_dfs = []
-        
+
         for worksheet in worksheets:
             worksheet_title = worksheet.title
             logger.info(f"Fetching data from worksheet: {worksheet_title}")
-            
+
             try:
                 # Get all values from the worksheet
                 values = worksheet.get_all_values()
-                
+
                 if not values or len(values) < 2:  # Need at least header + 1 data row
                     logger.debug(f"No data in worksheet '{worksheet_title}'")
                     continue
-                
+
                 # Convert to DataFrame
                 headers = values[0]
                 data_rows = values[1:]
-                
+
                 # Handle duplicate column names by adding suffix
                 # pandas automatically handles duplicates by adding .1, .2, etc.
                 # But we need to handle them manually to match our field mapping
                 seen = {}
                 unique_headers = []
                 header_mapping = {}  # Map unique headers back to original names for field mapping
-                
+
                 for h in headers:
                     if h in seen:
                         seen[h] += 1
-                        unique_name = f"{h}.{seen[h]}"  # Use . notation to match pandas default
+                        unique_name = (
+                            f"{h}.{seen[h]}"  # Use . notation to match pandas default
+                        )
                         unique_headers.append(unique_name)
                         header_mapping[unique_name] = h
                     else:
                         seen[h] = 0
                         unique_headers.append(h)
                         header_mapping[h] = h
-                
+
                 df = pd.DataFrame(data_rows, columns=unique_headers)
-                
+
                 # Add position_applied column with worksheet title
                 # Note: If the sheet already has a "職缺" column, this will override it with the worksheet title
                 # This ensures consistency - the worksheet name is the job position
                 df["position_applied"] = worksheet_title
-                
+
                 # Try to enhance resume_file column with hyperlinks if available
                 if "履歷" in df.columns:
                     # Extract hyperlinks from this worksheet
                     try:
                         hyperlinks = self._get_hyperlinks(worksheet, worksheet_title)
-                        
+
                         if hyperlinks:
-                            logger.info(f"Found {len(hyperlinks)} hyperlinks in '{worksheet_title}'")
-                        
+                            logger.info(
+                                f"Found {len(hyperlinks)} hyperlinks in '{worksheet_title}'"
+                            )
+
                         # Replace filename values with URLs where hyperlinks are available
                         for idx, url in hyperlinks.items():
                             if idx < len(df):
                                 df.iloc[idx, df.columns.get_loc("履歷")] = url
                     except Exception as e:
-                        logger.debug(f"Could not extract hyperlinks from '{worksheet_title}': {e}")
-                
+                        logger.debug(
+                            f"Could not extract hyperlinks from '{worksheet_title}': {e}"
+                        )
+
                 all_dfs.append(df)
-                
+
             except Exception as e:
-                logger.warning(f"Failed to fetch data from worksheet '{worksheet_title}': {e}")
+                logger.warning(
+                    f"Failed to fetch data from worksheet '{worksheet_title}': {e}"
+                )
                 continue
-        
+
         if not all_dfs:
             raise ImportError("No data found in any worksheet")
-        
+
         # Combine all DataFrames
         # Use outer join to handle different column structures across worksheets
         combined_df = pd.concat(all_dfs, ignore_index=True, sort=False)
-        
-        logger.info(f"Combined data from {len(all_dfs)} worksheets: {[ws.title for ws in worksheets if len(ws.get_all_values()) > 1]}")
-        
+
+        logger.info(
+            f"Combined data from {len(all_dfs)} worksheets: {[ws.title for ws in worksheets if len(ws.get_all_values()) > 1]}"
+        )
+
         return combined_df
 
     def _get_hyperlinks(self, worksheet, worksheet_title: str) -> dict[int, str]:
         """
         Get hyperlinks from a specific Google Sheets worksheet.
-        
+
         Args:
             worksheet: gspread worksheet object
             worksheet_title: Title of the worksheet (for logging)
-        
+
         Returns:
             Dictionary mapping row index (0-based, excluding header) to URL string
         """
         if not GSPREAD_AVAILABLE:
             return {}
-        
+
         try:
             # Find which column contains 履歷 (resume_file)
             headers = worksheet.row_values(1)
             try:
-                resume_col_idx = headers.index("履歷") + 1  # gspread uses 1-based indexing
+                resume_col_idx = (
+                    headers.index("履歷") + 1
+                )  # gspread uses 1-based indexing
             except ValueError:
                 logger.debug(f"履歷 column not found in worksheet '{worksheet_title}'")
                 return {}
-            
+
             # Use column index mode for Cake
             return get_hyperlinks_from_worksheet(
                 worksheet=worksheet,
