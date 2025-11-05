@@ -75,6 +75,13 @@ class ResumeImporter(ABC):
             if source_field in df.columns:
                 transformed_data[model_field] = df[source_field]
 
+        # Preserve any columns that are already in the model format (e.g., position_applied added by importer)
+        # These are typically fields that don't need mapping but should be preserved
+        model_fields = {"position_applied"}  # Add other direct model fields here if needed
+        for field in model_fields:
+            if field in df.columns and field not in transformed_data:
+                transformed_data[field] = df[field]
+
         # Handle NaN values
         transformed_df = pd.DataFrame(transformed_data)
         for col in transformed_df.columns:

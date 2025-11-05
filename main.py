@@ -353,6 +353,34 @@ def validate_data():
 
 
 @app.command()
+def remove_duplicates(
+    db_path: str = typer.Option("resume.db", help="Path to SQLite database file"),
+):
+    """
+    Remove duplicate records from the database based on email + source.
+    Keeps the most recently updated record for each duplicate group.
+    """
+    try:
+        database = ResumeDatabase(db_path)
+
+        if not database.database_exists():
+            typer.echo(f"❌ Database file not found: {db_path}", err=True)
+            raise typer.Exit(1)
+
+        typer.echo("Removing duplicate records...")
+        removed_count = database.remove_duplicates()
+
+        if removed_count > 0:
+            typer.echo(f"✅ Removed {removed_count} duplicate records")
+        else:
+            typer.echo("✅ No duplicate records found")
+
+    except Exception as e:
+        typer.echo(f"❌ Error removing duplicates: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def show_data(
     db_path: str = typer.Option("resume.db", help="Path to SQLite database file"),
     limit: int = typer.Option(10, help="Number of rows to display"),
