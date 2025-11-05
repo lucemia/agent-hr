@@ -2,13 +2,20 @@
 Database operations for resume import system.
 """
 
+import logging
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+
+import requests
 
 from sqlmodel import Session, select
 
 from .models import Resume, create_database_engine, create_tables
+
+logger = logging.getLogger(__name__)
 
 
 class ResumeDatabase:
@@ -23,21 +30,140 @@ class ResumeDatabase:
         # Create backup directory if it doesn't exist
         self.backup_dir.mkdir(parents=True, exist_ok=True)
 
-    def _backup_resume_file(self, resume_file: str | None, source: str | None = None) -> None:
+    def _convert_google_drive_url(self, url: str) -> str:
+        """
+        Convert Google Drive sharing URL to direct download URL.
+        
+        Args:
+            url: Google Drive URL (e.g., https://drive.google.com/file/d/FILE_ID/view?usp=sharing)
+            
+        Returns:
+            Direct download URL or original URL if conversion fails
+        """
+        # Pattern: https://drive.google.com/file/d/FILE_ID/view...
+        match = re.search(r'/file/d/([a-zA-Z0-9_-]+)', url)
+        if match:
+            file_id = match.group(1)
+            return f"https://drive.google.com/uc?export=download&id={file_id}"
+        return url
+
+    def _download_file_from_url(self, url: str, output_path: Path) -> bool:
+        """
+        Download a file from a URL to a local path.
+        
+        Args:
+            url: URL to download from
+            output_path: Local path to save the file
+            
+        Returns:
+            True if download successful, False otherwise
+        """
+        try:
+            # Handle Google Drive URLs
+            if 'drive.google.com' in url:
+                url = self._convert_google_drive_url(url)
+            
+            # Download with a timeout
+            response = requests.get(url, timeout=30, stream=True)
+            response.raise_for_status()
+            
+            # Determine file extension from Content-Type or URL
+            content_type = response.headers.get('Content-Type', '')
+            ext = output_path.suffix
+            
+            # If no extension, try to infer from Content-Type
+            if not ext and content_type:
+                if 'pdf' in content_type:
+                    ext = '.pdf'
+                elif 'msword' in content_type or 'wordprocessingml' in content_type:
+                    ext = '.docx'
+                elif 'text' in content_type:
+                    ext = '.txt'
+                else:
+                    # Try to get from URL
+                    parsed = urlparse(url)
+                    path_ext = Path(parsed.path).suffix
+                    if path_ext:
+                        ext = path_ext
+                    else:
+                        ext = '.pdf'  # Default to PDF
+            
+            # Update output path with extension if needed
+            if ext and not output_path.suffix:
+                output_path = output_path.with_suffix(ext)
+            
+            # Download file in chunks
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            logger.debug(f"Downloaded file from {url} to {output_path}")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Failed to download file from {url}: {e}")
+            return False
+
+    def _backup_resume_file(self, resume_file: str | None, source: str | None = None) -> str | None:
         """
         Backup a resume file to the backup folder.
+        
+        If resume_file is a URL, downloads it to the backup folder.
+        If resume_file is a local path, copies it to the backup folder.
 
         Args:
-            resume_file: Path or name of the resume file
+            resume_file: Path, name, or URL of the resume file
             source: Source of the resume (for organizing backups)
+            
+        Returns:
+            Path to the backed up file, or None if backup failed
         """
         if not resume_file:
-            return
+            return None
 
-        # Skip if it's a URL
+        # Create backup filename with timestamp to avoid conflicts
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Determine backup directory
+        if source:
+            source_backup_dir = self.backup_dir / source
+            source_backup_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            source_backup_dir = self.backup_dir
+
+        # Handle URLs
         if resume_file.startswith(("http://", "https://")):
-            return
+            # Extract filename from URL or use a default
+            parsed = urlparse(resume_file)
+            path = Path(parsed.path)
+            
+            # For Google Drive URLs, extract file ID for better naming
+            file_stem = "resume"
+            if 'drive.google.com' in resume_file:
+                match = re.search(r'/file/d/([a-zA-Z0-9_-]+)', resume_file)
+                if match:
+                    file_id = match.group(1)
+                    file_stem = f"gdrive_{file_id[:8]}"  # Use first 8 chars of file ID
+                else:
+                    file_stem = path.stem if path.stem and path.stem != "view" else "resume"
+            else:
+                file_stem = path.stem if path.stem else "resume"
+            
+            file_suffix = path.suffix if path.suffix else ".pdf"  # Default to PDF
+            
+            # Create unique backup filename
+            backup_filename = f"{timestamp}_{file_stem}{file_suffix}"
+            backup_path = source_backup_dir / backup_filename
+            
+            # Download file
+            if self._download_file_from_url(resume_file, backup_path):
+                logger.info(f"Downloaded resume file from URL to {backup_path}")
+                return str(backup_path)
+            else:
+                return None
 
+        # Handle local files
         # Try to resolve the file path
         file_path = Path(resume_file)
         
@@ -47,30 +173,24 @@ class ResumeDatabase:
 
         # Check if file exists
         if not file_path.exists() or not file_path.is_file():
-            return
+            logger.debug(f"Local file not found: {file_path}")
+            return None
 
-        # Create backup filename with timestamp to avoid conflicts
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         file_stem = file_path.stem
         file_suffix = file_path.suffix
         
         # Create unique backup filename
         backup_filename = f"{timestamp}_{file_stem}{file_suffix}"
-        
-        # If source is provided, organize by source
-        if source:
-            source_backup_dir = self.backup_dir / source
-            source_backup_dir.mkdir(parents=True, exist_ok=True)
-            backup_path = source_backup_dir / backup_filename
-        else:
-            backup_path = self.backup_dir / backup_filename
+        backup_path = source_backup_dir / backup_filename
 
         # Copy file to backup location
         try:
             shutil.copy2(file_path, backup_path)
-        except Exception:
-            # Silently fail if backup fails (don't stop the import process)
-            pass
+            logger.debug(f"Copied resume file to {backup_path}")
+            return str(backup_path)
+        except Exception as e:
+            logger.warning(f"Failed to backup resume file {file_path}: {e}")
+            return None
 
     def _find_existing_resume(
         self, session: Session, resume: Resume
