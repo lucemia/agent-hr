@@ -27,11 +27,8 @@ ENV/
 env/
 
 # Database files
-*.db
 *.sqlite
 *.sqlite3
-resume.db
-resume.sql
 
 # Environment variables
 .env
