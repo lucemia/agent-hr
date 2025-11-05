@@ -11,6 +11,7 @@ import requests
 
 from ..interface import ResumeImporter
 from ..models import InterviewStatus
+from .utils import get_hyperlinks_from_worksheet
 
 logger = logging.getLogger(__name__)
 
@@ -85,150 +86,45 @@ class LRSImporter(ResumeImporter):
         Returns:
             Dictionary mapping row index (0-based, excluding header) to URL string
         """
-        hyperlinks = {}
-        
         if not GSPREAD_AVAILABLE:
             logger.warning("gspread not available, cannot extract hyperlinks")
-            return hyperlinks
-            
-        try:
-            # Find which column contains 履歷 (resume_file)
-            # Try header name first, then fallback to column D (index 4)
-            headers = worksheet.row_values(1)
-            resume_col_idx = None
-            
-            # Try to find by header name
+            return {}
+        
+        # Use column range mode (D:D) for LRS
+        hyperlinks = get_hyperlinks_from_worksheet(
+            worksheet=worksheet,
+            sheet_id=self.sheet_id,
+            column_range="D:D",
+            worksheet_title=worksheet_title,
+        )
+        
+        # Fallback: try alternative method using formulas if no hyperlinks found
+        if not hyperlinks:
             try:
-                resume_col_idx = headers.index("履歷") + 1  # gspread uses 1-based indexing
-                logger.debug(f"Found '履歷' column at index {resume_col_idx} in worksheet '{worksheet_title}'")
-            except ValueError:
-                # Column not found by header name, try column D (index 4)
-                logger.debug(f"履歷 column not found by name in worksheet '{worksheet_title}', trying column D")
-                resume_col_idx = 4  # Column D is index 4 (1-based)
-            
-            if resume_col_idx is None:
-                logger.warning(f"Could not determine resume column for worksheet '{worksheet_title}'")
-                return hyperlinks
-            
-            # Use the Google Sheets API v4 to get hyperlinks directly
-            sheet_obj = worksheet.spreadsheet
-            logger.debug(f"Fetching hyperlinks from column {resume_col_idx} (1-based) in worksheet '{worksheet_title}'")
-            
-            try:
-                # Get the spreadsheet data with hyperlinks
-                # Request more fields to capture hyperlinks from formulas, effectiveValue, textFormatRuns, and chipRuns (Drive file smart chips)
-                response = sheet_obj.client.request(
-                    "get",
-                    f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}",
-                    params={
-                        "ranges": f"{worksheet.title}!D:D",  # Explicitly request column D
-                        "includeGridData": "true",
-                        "fields": "sheets(data(rowData(values(hyperlink,effectiveValue,userEnteredValue,textFormatRuns,chipRuns))))"
-                    }
-                )
+                headers = worksheet.row_values(1)
+                resume_col_idx = None
                 
-                # Parse response if it's a Response object
-                # gspread's client.request() may return a dict or a Response object
-                if isinstance(response, dict):
-                    result = response
-                elif hasattr(response, 'json'):
-                    result = response.json()
-                elif hasattr(response, 'text'):
-                    import json
-                    result = json.loads(response.text)
-                else:
-                    result = response
-                
-                logger.debug(f"API response type: {type(result)}, keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
-                
-                if result and 'sheets' in result and len(result['sheets']) > 0:
-                    sheet_data = result['sheets'][0]
-                    if 'data' in sheet_data and len(sheet_data['data']) > 0:
-                        row_data = sheet_data['data'][0].get('rowData', [])
-                        logger.debug(f"Found {len(row_data)} rows in worksheet '{worksheet_title}'")
-                        
-                        # Skip header row (index 0), start from row 1
-                        for row_idx, row in enumerate(row_data[1:], start=0):
-                            if row and 'values' in row and len(row['values']) > 0:
-                                # Column D is the first (and only) column in the range
-                                cell = row['values'][0]
-                                
-                                url = None
-                                
-                                # Method 1: Check if cell has a direct hyperlink property
-                                if 'hyperlink' in cell and cell['hyperlink']:
-                                    url = cell['hyperlink']
-                                    logger.debug(f"Found direct hyperlink in row {row_idx + 2}: {url}")
-                                
-                                # Method 2: Check if it's a HYPERLINK formula in userEnteredValue
-                                if not url and 'userEnteredValue' in cell:
-                                    user_value = cell['userEnteredValue']
-                                    if 'formulaValue' in user_value:
-                                        formula = user_value['formulaValue']
-                                        import re
-                                        # Extract URL from HYPERLINK formula
-                                        # HYPERLINK("url", "display text") or HYPERLINK("url")
-                                        match = re.search(r'HYPERLINK\("([^"]+)"', formula)
-                                        if match:
-                                            url = match.group(1)
-                                            logger.debug(f"Found HYPERLINK formula in userEnteredValue in row {row_idx + 2}: {url}")
-                                
-                                # Method 3: Check effectiveValue for hyperlink
-                                elif 'effectiveValue' in cell:
-                                    eff_value = cell['effectiveValue']
-                                    if 'hyperlink' in eff_value:
-                                        url = eff_value['hyperlink']
-                                        logger.debug(f"Found hyperlink in effectiveValue in row {row_idx + 2}: {url}")
-                                
-                                # Method 4: Check chipRuns for Drive file smart chips
-                                if not url and 'chipRuns' in cell and cell['chipRuns']:
-                                    for chip_run in cell['chipRuns']:
-                                        if 'chip' in chip_run and 'richLinkProperties' in chip_run['chip']:
-                                            rich_link = chip_run['chip']['richLinkProperties']
-                                            if 'uri' in rich_link:
-                                                url = rich_link['uri']
-                                                logger.debug(f"Found Drive file smart chip in row {row_idx + 2}: {url}")
-                                                break
-                                
-                                # Method 5: Check textFormatRuns for hyperlink (for formatted text with links)
-                                if not url and 'textFormatRuns' in cell and cell['textFormatRuns']:
-                                    for text_run in cell['textFormatRuns']:
-                                        if 'link' in text_run and 'uri' in text_run['link']:
-                                            url = text_run['link']['uri']
-                                            logger.debug(f"Found hyperlink in textFormatRuns in row {row_idx + 2}: {url}")
-                                            break
-                                
-                                if url:
-                                    hyperlinks[row_idx] = url
-                                            
-            except Exception as e:
-                logger.warning(f"Failed to extract hyperlinks using includeGridData method: {e}")
-            
-            # Always try alternative method using formulas as a fallback
-            # Sometimes hyperlinks are stored as HYPERLINK formulas
-            if not hyperlinks:
+                # Try to find by header name
                 try:
+                    resume_col_idx = headers.index("履歷") + 1
+                except ValueError:
+                    resume_col_idx = 4  # Column D is index 4 (1-based)
+                
+                if resume_col_idx:
                     num_rows = len(worksheet.get_all_values())
                     if num_rows > 1:
                         col_letter = _col_idx_to_letter(resume_col_idx)
                         logger.debug(f"Trying alternative method with column {col_letter} (formula extraction)")
-                        # Try to get formulas
+                        
+                        sheet_obj = worksheet.spreadsheet
                         response = sheet_obj.client.request(
                             "get",
                             f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}/values/{worksheet.title}!{col_letter}2:{col_letter}{num_rows}",
                             params={"valueRenderOption": "FORMULA"}
                         )
                         
-                        # Parse response if it's a Response object
-                        if isinstance(response, dict):
-                            result = response
-                        elif hasattr(response, 'json'):
-                            result = response.json()
-                        elif hasattr(response, 'text'):
-                            import json
-                            result = json.loads(response.text)
-                        else:
-                            result = response
+                        from .utils import parse_api_response
+                        result = parse_api_response(response)
                         
                         if result and 'values' in result:
                             import re
@@ -242,12 +138,9 @@ class LRSImporter(ResumeImporter):
                                         url = match.group(1)
                                         hyperlinks[idx] = url
                                         logger.debug(f"Found HYPERLINK formula via alternative method in row {idx + 2}: {url}")
-                except Exception as e2:
-                    logger.debug(f"Alternative method (formula extraction) also failed: {e2}")
-                
-        except Exception as e:
-            logger.error(f"Error extracting hyperlinks from worksheet '{worksheet_title}': {e}", exc_info=True)
-            
+            except Exception as e2:
+                logger.debug(f"Alternative method (formula extraction) also failed: {e2}")
+        
         logger.info(f"Extracted {len(hyperlinks)} hyperlinks from worksheet '{worksheet_title}'")
         return hyperlinks
 

@@ -12,6 +12,7 @@ import requests
 
 from ..interface import ResumeImporter
 from ..models import InterviewStatus
+from .utils import get_hyperlinks_from_worksheet
 
 logger = logging.getLogger(__name__)
 
@@ -219,10 +220,8 @@ class CakeImporter(ResumeImporter):
         Returns:
             Dictionary mapping row index (0-based, excluding header) to URL string
         """
-        hyperlinks = {}
-        
         if not GSPREAD_AVAILABLE:
-            return hyperlinks
+            return {}
         
         try:
             # Find which column contains 履歷 (resume_file)
@@ -231,97 +230,18 @@ class CakeImporter(ResumeImporter):
                 resume_col_idx = headers.index("履歷") + 1  # gspread uses 1-based indexing
             except ValueError:
                 logger.debug(f"履歷 column not found in worksheet '{worksheet_title}'")
-                return hyperlinks
+                return {}
             
-            # Use the Google Sheets API v4 to get hyperlinks directly
-            # Request more fields to capture hyperlinks from formulas, effectiveValue, textFormatRuns, and chipRuns (Drive file smart chips)
-            sheet_obj = worksheet.spreadsheet
-            response = sheet_obj.client.request(
-                "get",
-                f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}",
-                params={
-                    "ranges": worksheet.title,
-                    "includeGridData": "true",
-                    "fields": "sheets(data(rowData(values(hyperlink,effectiveValue,userEnteredValue,textFormatRuns,chipRuns))))"
-                }
+            # Use column index mode for Cake
+            return get_hyperlinks_from_worksheet(
+                worksheet=worksheet,
+                sheet_id=self.sheet_id,
+                column_index=resume_col_idx,
+                worksheet_title=worksheet_title,
             )
-            
-            # Parse response if it's a Response object
-            # gspread's client.request() may return a dict or a Response object
-            if isinstance(response, dict):
-                result = response
-            elif hasattr(response, 'json'):
-                result = response.json()
-            elif hasattr(response, 'text'):
-                import json
-                result = json.loads(response.text)
-            else:
-                result = response
-            
-            logger.debug(f"API response type: {type(result)}, keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
-            
-            if result and 'sheets' in result and len(result['sheets']) > 0:
-                sheet_data = result['sheets'][0]
-                if 'data' in sheet_data and len(sheet_data['data']) > 0:
-                    row_data = sheet_data['data'][0].get('rowData', [])
-                    
-                    # Skip header row (index 0), start from row 1
-                    for row_idx, row in enumerate(row_data[1:], start=0):
-                        if row and 'values' in row and len(row['values']) >= resume_col_idx:
-                            cell = row['values'][resume_col_idx - 1]
-                            
-                            url = None
-                            
-                            # Method 1: Check if cell has a direct hyperlink property
-                            if 'hyperlink' in cell and cell['hyperlink']:
-                                url = cell['hyperlink']
-                                logger.debug(f"Found direct hyperlink in row {row_idx + 2}: {url}")
-                            
-                            # Method 2: Check if it's a HYPERLINK formula in userEnteredValue
-                            if not url and 'userEnteredValue' in cell:
-                                user_value = cell['userEnteredValue']
-                                if 'formulaValue' in user_value:
-                                    formula = user_value['formulaValue']
-                                    import re
-                                    # Extract URL from HYPERLINK formula
-                                    # HYPERLINK("url", "display text") or HYPERLINK("url")
-                                    match = re.search(r'HYPERLINK\("([^"]+)"', formula)
-                                    if match:
-                                        url = match.group(1)
-                                        logger.debug(f"Found HYPERLINK formula in userEnteredValue in row {row_idx + 2}: {url}")
-                            
-                            # Method 3: Check effectiveValue for hyperlink
-                            if not url and 'effectiveValue' in cell:
-                                eff_value = cell['effectiveValue']
-                                if 'hyperlink' in eff_value:
-                                    url = eff_value['hyperlink']
-                                    logger.debug(f"Found hyperlink in effectiveValue in row {row_idx + 2}: {url}")
-                            
-                            # Method 4: Check chipRuns for Drive file smart chips
-                            if not url and 'chipRuns' in cell and cell['chipRuns']:
-                                for chip_run in cell['chipRuns']:
-                                    if 'chip' in chip_run and 'richLinkProperties' in chip_run['chip']:
-                                        rich_link = chip_run['chip']['richLinkProperties']
-                                        if 'uri' in rich_link:
-                                            url = rich_link['uri']
-                                            logger.debug(f"Found Drive file smart chip in row {row_idx + 2}: {url}")
-                                            break
-                            
-                            # Method 5: Check textFormatRuns for hyperlink (for formatted text with links)
-                            if not url and 'textFormatRuns' in cell and cell['textFormatRuns']:
-                                for text_run in cell['textFormatRuns']:
-                                    if 'link' in text_run and 'uri' in text_run['link']:
-                                        url = text_run['link']['uri']
-                                        logger.debug(f"Found hyperlink in textFormatRuns in row {row_idx + 2}: {url}")
-                                        break
-                            
-                            if url:
-                                hyperlinks[row_idx] = url
-        except Exception:
-            # Silently fail if hyperlink extraction doesn't work
-            pass
-        
-        return hyperlinks
+        except Exception as e:
+            logger.debug(f"Could not extract hyperlinks from '{worksheet_title}': {e}")
+            return {}
 
     def apply_source_specific_transforms(
         self, row_dict: dict[str, Any]
