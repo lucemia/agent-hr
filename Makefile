@@ -1,4 +1,4 @@
-.PHONY: lint format check test install clean help pre-commit pre-commit-install pre-commit-update
+.PHONY: lint format check test install clean help pre-commit pre-commit-install pre-commit-update dump-db
 
 # Default target
 help:
@@ -16,6 +16,7 @@ help:
 	@echo "  test-verbose      - Run tests with verbose output"
 	@echo "  test-coverage     - Run tests with coverage report"
 	@echo "  test-watch        - Run tests in watch mode"
+	@echo "  dump-db           - Dump database to SQL file"
 
 # Linting
 lint:
@@ -68,3 +69,7 @@ test-coverage:
 
 test-watch:
 	uv run pytest-watch
+
+# Database dump
+dump-db:
+	sqlite3 resume.db .dump > resume.sql
