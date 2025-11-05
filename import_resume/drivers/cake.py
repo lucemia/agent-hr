@@ -234,16 +234,31 @@ class CakeImporter(ResumeImporter):
                 return hyperlinks
             
             # Use the Google Sheets API v4 to get hyperlinks directly
+            # Request more fields to capture hyperlinks from formulas, effectiveValue, textFormatRuns, and chipRuns (Drive file smart chips)
             sheet_obj = worksheet.spreadsheet
-            result = sheet_obj.client.request(
+            response = sheet_obj.client.request(
                 "get",
                 f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}",
                 params={
                     "ranges": worksheet.title,
                     "includeGridData": "true",
-                    "fields": "sheets(data(rowData(values(hyperlink,userEnteredValue))))"
+                    "fields": "sheets(data(rowData(values(hyperlink,effectiveValue,userEnteredValue,textFormatRuns,chipRuns))))"
                 }
             )
+            
+            # Parse response if it's a Response object
+            # gspread's client.request() may return a dict or a Response object
+            if isinstance(response, dict):
+                result = response
+            elif hasattr(response, 'json'):
+                result = response.json()
+            elif hasattr(response, 'text'):
+                import json
+                result = json.loads(response.text)
+            else:
+                result = response
+            
+            logger.debug(f"API response type: {type(result)}, keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
             
             if result and 'sheets' in result and len(result['sheets']) > 0:
                 sheet_data = result['sheets'][0]
@@ -255,21 +270,53 @@ class CakeImporter(ResumeImporter):
                         if row and 'values' in row and len(row['values']) >= resume_col_idx:
                             cell = row['values'][resume_col_idx - 1]
                             
-                            # Check if cell has a hyperlink
+                            url = None
+                            
+                            # Method 1: Check if cell has a direct hyperlink property
                             if 'hyperlink' in cell and cell['hyperlink']:
                                 url = cell['hyperlink']
-                                hyperlinks[row_idx] = url
-                            # Also check if it's a HYPERLINK formula
-                            elif 'userEnteredValue' in cell:
+                                logger.debug(f"Found direct hyperlink in row {row_idx + 2}: {url}")
+                            
+                            # Method 2: Check if it's a HYPERLINK formula in userEnteredValue
+                            if not url and 'userEnteredValue' in cell:
                                 user_value = cell['userEnteredValue']
                                 if 'formulaValue' in user_value:
                                     formula = user_value['formulaValue']
                                     import re
                                     # Extract URL from HYPERLINK formula
+                                    # HYPERLINK("url", "display text") or HYPERLINK("url")
                                     match = re.search(r'HYPERLINK\("([^"]+)"', formula)
                                     if match:
                                         url = match.group(1)
-                                        hyperlinks[row_idx] = url
+                                        logger.debug(f"Found HYPERLINK formula in userEnteredValue in row {row_idx + 2}: {url}")
+                            
+                            # Method 3: Check effectiveValue for hyperlink
+                            if not url and 'effectiveValue' in cell:
+                                eff_value = cell['effectiveValue']
+                                if 'hyperlink' in eff_value:
+                                    url = eff_value['hyperlink']
+                                    logger.debug(f"Found hyperlink in effectiveValue in row {row_idx + 2}: {url}")
+                            
+                            # Method 4: Check chipRuns for Drive file smart chips
+                            if not url and 'chipRuns' in cell and cell['chipRuns']:
+                                for chip_run in cell['chipRuns']:
+                                    if 'chip' in chip_run and 'richLinkProperties' in chip_run['chip']:
+                                        rich_link = chip_run['chip']['richLinkProperties']
+                                        if 'uri' in rich_link:
+                                            url = rich_link['uri']
+                                            logger.debug(f"Found Drive file smart chip in row {row_idx + 2}: {url}")
+                                            break
+                            
+                            # Method 5: Check textFormatRuns for hyperlink (for formatted text with links)
+                            if not url and 'textFormatRuns' in cell and cell['textFormatRuns']:
+                                for text_run in cell['textFormatRuns']:
+                                    if 'link' in text_run and 'uri' in text_run['link']:
+                                        url = text_run['link']['uri']
+                                        logger.debug(f"Found hyperlink in textFormatRuns in row {row_idx + 2}: {url}")
+                                        break
+                            
+                            if url:
+                                hyperlinks[row_idx] = url
         except Exception:
             # Silently fail if hyperlink extraction doesn't work
             pass
